@@ -1,0 +1,13 @@
+{
+  "name": "whistledrop",
+  "private": true,
+  "packageManager": "npm@10.9.8",
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "npm run dev --workspace=@whistledrop/api",
+    "build": "npm run build --workspace=@whistledrop/api",
+    "start": "npm run start --workspace=@whistledrop/api",
+    "test": "npm run test --workspace=@whistledrop/api",
+    "typecheck": "npm run typecheck --workspace=@whistledrop/api"
+  }
+}
