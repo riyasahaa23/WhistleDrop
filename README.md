@@ -90,6 +90,14 @@ Status transitions are `SUBMITTED → UNDER_REVIEW → RESOLVED | DISMISSED`. Te
 
 Open `http://localhost:3000/docs` while the server is running. The raw OpenAPI document is available at `GET /docs/json`.
 
+Screenshots of the running API and Swagger UI are available in [`screenshots/`](./screenshots/):
+
+- [Swagger API overview](./screenshots/swagger-backend.png)
+- [Anonymous report submission](./screenshots/anonymous-submission.png)
+- [Anonymous report tracking](./screenshots/anonymous-tracking.png)
+- [Health check](./screenshots/health.png)
+- [README/API evidence](./screenshots/readme.png)
+
 ### Permanent case closure
 
 `POST /api/v1/moderator/reports/:id/close` permanently closes a case for moderator retention workflows. A closed case cannot receive further status changes. Closure records only the moderator action and timestamp in an audit table; it does not record reporter identity.

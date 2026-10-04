@@ -16,7 +16,36 @@ export async function buildApp(options: { logger?: boolean } = {}): Promise<Fast
   await app.register(cors, { origin: false });
   await app.register(rateLimit, { max: config.RATE_LIMIT_MAX, timeWindow: config.RATE_LIMIT_WINDOW_MS });
   await app.register(multipart, { limits: { fileSize: config.MAX_UPLOAD_BYTES, files: 1, fields: 0 } });
-  await app.register(swagger, { openapi: { info: { title: 'WhistleDrop API', description: 'Confidential anonymous reporting API', version: '1.0.0' }, servers: [{ url: `http://localhost:${config.PORT}` }], tags: [{ name: 'Public' }, { name: 'Moderator' }] } });
+  await app.register(swagger, {
+    transform: ({ schema, url }: any) => {
+      if (url === '/api/v1/reports/:caseCode/evidence') {
+        return {
+          schema: {
+            ...schema,
+            body: {
+              type: 'object',
+              required: ['file'],
+              properties: {
+                file: { type: 'string', format: 'binary', description: 'Evidence file (PDF, PNG, JPEG, or UTF-8 text).' }
+              }
+            }
+          },
+          url
+        };
+      }
+      return { schema, url };
+    },
+    openapi: {
+      info: { title: 'WhistleDrop API', description: 'Confidential anonymous reporting API', version: '1.0.0' },
+      servers: [{ url: `http://localhost:${config.PORT}` }],
+      tags: [{ name: 'Public' }, { name: 'Moderator' }],
+      components: {
+        securitySchemes: {
+          bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'token' }
+        }
+      }
+    }
+  });
   await app.register(swaggerUi, { routePrefix: '/docs' });
 
   app.decorate('authenticate', async function (request: any, reply: any) {
@@ -31,7 +60,23 @@ export async function buildApp(options: { logger?: boolean } = {}): Promise<Fast
   });
 
   app.get('/health', async () => ({ status: 'ok' }));
-  app.post('/api/v1/reports', async (request, reply) => {
+  app.post('/api/v1/reports', {
+    schema: {
+      tags: ['Public'],
+      summary: 'Submit an anonymous report',
+      description: 'Accepts the report category, description, and an optional evidence URL.',
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['category', 'description'],
+        properties: {
+          category: { type: 'string', enum: ['SECURITY', 'HARASSMENT', 'CORRUPTION', 'TECHNICAL', 'OTHER'] },
+          description: { type: 'string', minLength: 10, maxLength: 10_000 },
+          evidenceUrl: { type: 'string', format: 'uri', maxLength: 2_048 }
+        }
+      }
+    }
+  }, async (request, reply) => {
     const parsed = createReportSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'ValidationError', message: parsed.error.issues.map((i) => i.message).join('; ') });
     const result = createReport(parsed.data);
@@ -45,7 +90,20 @@ export async function buildApp(options: { logger?: boolean } = {}): Promise<Fast
     if (!report) return reply.code(404).send({ error: 'NotFound', message: 'Report not found.' });
     return { caseCode: parsed.data.caseCode, category: report.category, status: report.status, closed: Boolean(report.closedAt), updates: report.updates, createdAt: report.createdAt, updatedAt: report.updatedAt };
   });
-  app.post('/api/v1/reports/track', async (request, reply) => {
+  app.post('/api/v1/reports/track', {
+    schema: {
+      tags: ['Public'],
+      summary: 'Track a report anonymously using its case code',
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['caseCode'],
+        properties: {
+          caseCode: { type: 'string', pattern: '^[A-Z2-9]{26}$' }
+        }
+      }
+    }
+  }, async (request, reply) => {
     reply.header('Cache-Control', 'no-store');
     const parsed = trackReportBodySchema.safeParse(request.body);
     if (!parsed.success) return reply.code(404).send({ error: 'NotFound', message: 'Report not found.' });
@@ -53,7 +111,19 @@ export async function buildApp(options: { logger?: boolean } = {}): Promise<Fast
     if (!report) return reply.code(404).send({ error: 'NotFound', message: 'Report not found.' });
     return { caseCode: parsed.data.caseCode, category: report.category, status: report.status, closed: Boolean(report.closedAt), updates: report.updates, createdAt: report.createdAt, updatedAt: report.updatedAt };
   });
-  app.post('/api/v1/reports/:caseCode/evidence', async (request, reply) => {
+  app.post('/api/v1/reports/:caseCode/evidence', {
+    schema: {
+      tags: ['Public'],
+      summary: 'Upload evidence for a report',
+      description: 'Upload one PDF, PNG, JPEG, or UTF-8 text file for an open report.',
+      consumes: ['multipart/form-data'],
+      params: {
+        type: 'object',
+        required: ['caseCode'],
+        properties: { caseCode: { type: 'string', pattern: '^[A-Z2-9]{26}$' } }
+      },
+    }
+  }, async (request, reply) => {
     reply.header('Cache-Control', 'no-store');
     const parsed = trackReportSchema.safeParse(request.params);
     if (!parsed.success) return reply.code(404).send({ error: 'NotFound', message: 'Report not found.' });
@@ -74,7 +144,14 @@ export async function buildApp(options: { logger?: boolean } = {}): Promise<Fast
       throw error;
     }
   });
-  app.get('/api/v1/moderator/reports', { preHandler: (app as any).authenticate }, async (request, reply) => {
+  app.get('/api/v1/moderator/reports', {
+    preHandler: (app as any).authenticate,
+    schema: {
+      tags: ['Moderator'],
+      summary: 'List reports for moderation',
+      security: [{ bearerAuth: [] }]
+    }
+  }, async (request, reply) => {
     const parsed = listReportsQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.code(400).send({ error: 'ValidationError', message: 'Invalid category, status, limit, or offset.' });
     const result = listReports(parsed.data);
@@ -85,7 +162,28 @@ export async function buildApp(options: { logger?: boolean } = {}): Promise<Fast
       offset: parsed.data.offset
     };
   });
-  app.patch('/api/v1/moderator/reports/:id', { preHandler: (app as any).authenticate }, async (request, reply) => {
+  app.patch('/api/v1/moderator/reports/:id', {
+    preHandler: (app as any).authenticate,
+    schema: {
+      tags: ['Moderator'],
+      summary: 'Update report status and add a moderator message',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: { id: { type: 'string', minLength: 1 } }
+      },
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['status', 'update'],
+        properties: {
+          status: { type: 'string', enum: ['SUBMITTED', 'UNDER_REVIEW', 'RESOLVED', 'DISMISSED'] },
+          update: { type: 'string', minLength: 1, maxLength: 1_000 }
+        }
+      }
+    }
+  }, async (request, reply) => {
     const parsed = updateReportSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'ValidationError', message: parsed.error.issues.map((i) => i.message).join('; ') });
     try {
@@ -99,7 +197,27 @@ export async function buildApp(options: { logger?: boolean } = {}): Promise<Fast
       throw error;
     }
   });
-  app.post('/api/v1/moderator/reports/:id/updates', { preHandler: (app as any).authenticate }, async (request, reply) => {
+  app.post('/api/v1/moderator/reports/:id/updates', {
+    preHandler: (app as any).authenticate,
+    schema: {
+      tags: ['Moderator'],
+      summary: 'Add a reporter-visible moderator update',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: { id: { type: 'string', minLength: 1 } }
+      },
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['update'],
+        properties: {
+          update: { type: 'string', minLength: 1, maxLength: 1_000 }
+        }
+      }
+    }
+  }, async (request, reply) => {
     const parsed = addUpdateSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'ValidationError', message: parsed.error.issues.map((i) => i.message).join('; ') });
     const reportId = (request.params as { id: string }).id;
@@ -113,7 +231,20 @@ export async function buildApp(options: { logger?: boolean } = {}): Promise<Fast
       throw error;
     }
   });
-  app.post('/api/v1/moderator/reports/:id/close', { preHandler: (app as any).authenticate }, async (request, reply) => {
+  app.post('/api/v1/moderator/reports/:id/close', {
+    preHandler: (app as any).authenticate,
+    schema: {
+      tags: ['Moderator'],
+      summary: 'Permanently close a resolved or dismissed case',
+      description: 'This action takes the report ID in the path and requires a Bearer token; no request body is needed.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: { id: { type: 'string', minLength: 1 } }
+      }
+    }
+  }, async (request, reply) => {
     const reportId = (request.params as { id: string }).id;
     try {
       const report = closeReport(reportId, 'moderator-token');
@@ -124,7 +255,22 @@ export async function buildApp(options: { logger?: boolean } = {}): Promise<Fast
       throw error;
     }
   });
-  app.get('/api/v1/moderator/reports/:id/evidence/:evidenceId', { preHandler: (app as any).authenticate }, async (request, reply) => {
+  app.get('/api/v1/moderator/reports/:id/evidence/:evidenceId', {
+    preHandler: (app as any).authenticate,
+    schema: {
+      tags: ['Moderator'],
+      summary: 'Download report evidence',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id', 'evidenceId'],
+        properties: {
+          id: { type: 'string', minLength: 1 },
+          evidenceId: { type: 'string', minLength: 1 }
+        }
+      }
+    }
+  }, async (request, reply) => {
     const params = request.params as { id: string; evidenceId: string };
     const evidence = getEvidence(params.evidenceId);
     if (!evidence || evidence.reportId !== params.id) return reply.code(404).send({ error: 'NotFound', message: 'Evidence not found.' });
