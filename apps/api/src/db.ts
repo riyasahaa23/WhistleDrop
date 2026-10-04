@@ -15,6 +15,7 @@ db.exec(`
     description TEXT NOT NULL,
     evidence_url TEXT,
     status TEXT NOT NULL CHECK(status IN ('SUBMITTED','UNDER_REVIEW','RESOLVED','DISMISSED')),
+    closed_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -28,4 +29,22 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
   CREATE INDEX IF NOT EXISTS idx_reports_category ON reports(category);
   CREATE INDEX IF NOT EXISTS idx_updates_report ON report_updates(report_id);
+  CREATE TABLE IF NOT EXISTS evidence (
+    id TEXT PRIMARY KEY,
+    report_id TEXT NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+    stored_name TEXT NOT NULL UNIQUE,
+    content_type TEXT NOT NULL,
+    file_size INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_evidence_report ON evidence(report_id);
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id TEXT PRIMARY KEY,
+    action TEXT NOT NULL,
+    report_id TEXT,
+    moderator_email TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
 `);
+
+try { db.exec('ALTER TABLE reports ADD COLUMN closed_at TEXT'); } catch { /* existing database already migrated */ }
